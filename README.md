@@ -16,6 +16,20 @@ like Vim, a built-in file explorer, and a batteries-included live server — wit
 
 ---
 
+## About
+
+`vmn` (short for *vimini*) is built for developers who appreciate the simplicity and efficiency of modal terminal text editors but want a modern, zero-config experience. Instead of spending hours configuring plugins, writing Lua scripts, or setting up complex tools, `vmn` gives you a highly productive workspace out of the box.
+
+### Why vmn?
+
+- **No Plugins, No Configuration:** Key features like the visual file explorer and the live server are built directly into the editor and work immediately.
+- **No AI Hype:** A pure, deterministic tool focused on providing a stable, reliable coding environment.
+- **Modern TUI Aesthetics:** Powered by `ratatui` to provide clean borders, clear panels, and a responsive status bar.
+- **High Performance:** Powered by Rust and `ropey` (a fast UTF-8 rope text buffer), allowing you to open and edit large source files instantly.
+- **Batteries-Included Live Reload:** With `:serve`, web developers can instantly spin up a local server, watch files, and enjoy hot-reload in the browser without leaving their editor.
+
+---
+
 ## Features
 
 - **Modal editing** — Normal / Insert / Command modes, `hjkl` navigation.
@@ -78,12 +92,30 @@ No other system packages are needed — the binary is self-contained.
 | **Rust**  | 1.96.0 (or newer) | Edition 2021. Install via [rustup](https://rustup.rs). |
 | **Cargo** | ships with Rust   | Used to build and install.                    |
 
-Verify:
+#### How to Install the Toolchain
 
-```bash
-rustc --version    # should be >= 1.96.0
-cargo --version
-```
+If you do not have Rust and Cargo installed, you can set them up using the following commands:
+
+1. **Install rustup** (the official Rust toolchain installer):
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+   Follow the on-screen prompts. Once completed, restart your terminal or run:
+   ```bash
+   source "$HOME/.cargo/env"
+   ```
+
+2. **Alternative installation (Homebrew for macOS)**:
+   ```bash
+   brew install rustup
+   rustup-init
+   ```
+
+3. **Verify the installation**:
+   ```bash
+   rustc --version    # should be >= 1.96.0
+   cargo --version
+   ```
 
 ### Rust dependencies
 
