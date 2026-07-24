@@ -39,6 +39,48 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Translate a crossterm key event into the byte sequence a PTY expects.
+/// Returns None for keys with no terminal representation.
+fn key_to_pty_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let bytes = match key.code {
+        KeyCode::Char(c) => {
+            if ctrl {
+                let lower = c.to_ascii_lowercase();
+                match lower {
+                    // Ctrl-A..Ctrl-Z -> control codes 0x01..0x1a
+                    'a'..='z' => vec![(lower as u8 - b'a') + 1],
+                    ' ' => vec![0], // Ctrl-Space -> NUL
+                    _ => {
+                        let mut b = [0u8; 4];
+                        c.encode_utf8(&mut b).as_bytes().to_vec()
+                    }
+                }
+            } else {
+                let mut b = [0u8; 4];
+                c.encode_utf8(&mut b).as_bytes().to_vec()
+            }
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => vec![0x1b, b'[', b'A'],
+        KeyCode::Down => vec![0x1b, b'[', b'B'],
+        KeyCode::Right => vec![0x1b, b'[', b'C'],
+        KeyCode::Left => vec![0x1b, b'[', b'D'],
+        KeyCode::Home => vec![0x1b, b'[', b'H'],
+        KeyCode::End => vec![0x1b, b'[', b'F'],
+        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
+        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
+        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
+        KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
+        _ => return None,
+    };
+    Some(bytes)
+}
+
 fn handle_key(app: &mut App, key: KeyEvent) {
     if app.mode == Mode::Command {
         match key.code {
@@ -56,7 +98,27 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Ctrl-t toggles the terminal from anywhere and is never sent to the shell.
+    if ctrl && key.code == KeyCode::Char('t') {
+        app.toggle_terminal();
+        return;
+    }
+
+    // While the terminal is focused, every other key goes straight to the shell
+    // — including Ctrl-C (SIGINT to the foreground program), Tab (completion),
+    // and `:` — so none of the editor bindings below apply.
+    if app.focus == Focus::Terminal {
+        if let Some(bytes) = key_to_pty_bytes(key) {
+            if let Some(term) = app.terminal.as_mut() {
+                term.send(&bytes);
+            }
+        }
+        return;
+    }
+
+    if ctrl && key.code == KeyCode::Char('c') {
         app.should_quit = true;
         return;
     }
@@ -92,7 +154,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     match app.focus {
         Focus::Explorer => handle_explorer_key(app, key),
-        Focus::Editor => handle_editor_key(app, key),
+        // Terminal focus is fully handled above and returns before reaching
+        // here; treat anything else as editor input.
+        Focus::Editor | Focus::Terminal => handle_editor_key(app, key),
     }
 }
 
@@ -157,15 +221,24 @@ fn run(app: &mut App) -> Result<()> {
     while !app.should_quit {
         guard.terminal.draw(|f| ui::draw(f, app))?;
 
-        // Poll instead of blocking so the autosave timer keeps ticking even
-        // when the user isn't typing. 250ms keeps idle CPU near zero.
-        if event::poll(Duration::from_millis(250))? {
+        // Poll instead of blocking so the autosave timer keeps ticking when the
+        // user isn't typing. With the terminal open we poll faster so shell
+        // output paints promptly; otherwise 250ms keeps idle CPU near zero.
+        let timeout = if app.term_visible {
+            Duration::from_millis(30)
+        } else {
+            Duration::from_millis(250)
+        };
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     handle_key(app, key);
                 }
             }
         }
+
+        // Close the panel if the shell exited on its own (exit / Ctrl-D).
+        app.reap_terminal();
 
         if last_autosave.elapsed() >= AUTOSAVE_EVERY {
             app.autosave();

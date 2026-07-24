@@ -1,5 +1,6 @@
 use crate::app::{App, Focus, Mode, View};
 use ratatui::{prelude::*, widgets::*};
+use tui_term::widget::PseudoTerminal;
 
 pub const ACCENT: Color = Color::Rgb(120, 170, 255);
 pub const DIM: Color = Color::Rgb(90, 95, 110);
@@ -41,6 +42,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (":e <file>", "open an existing file"),
     (":serve", "live server + open in browser"),
     (":serve stop", "stop the live server"),
+    (":term  /  ctrl-t", "toggle the integrated terminal"),
     (":cd <path>", "change working directory"),
     (":w", "save now"),
     (":?", "show this command list"),
@@ -118,13 +120,49 @@ fn draw_help(f: &mut Frame, _app: &App, area: Rect) {
 }
 
 fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
+    // When the terminal is open, carve a panel off the bottom for it.
+    let (top, term_area) = if app.term_visible {
+        let term_h = (area.height / 3).clamp(6, 16);
+        let v = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(term_h)])
+            .split(area);
+        (v[0], Some(v[1]))
+    } else {
+        (area, None)
+    };
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(32), Constraint::Min(20)])
-        .split(area);
+        .split(top);
 
     draw_explorer(f, app, cols[0]);
     draw_editor(f, app, cols[1]);
+
+    if let Some(ta) = term_area {
+        draw_terminal(f, app, ta);
+    }
+}
+
+fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Terminal;
+    let block = pane("terminal", focused);
+
+    // Match the emulator/PTY to the pane's inner dimensions before rendering,
+    // so line wrapping and full-screen programs (vim, htop) lay out correctly.
+    let inner_rows = area.height.saturating_sub(2).max(1);
+    let inner_cols = area.width.saturating_sub(2).max(1);
+
+    if let Some(term) = app.terminal.as_mut() {
+        term.resize(inner_rows, inner_cols);
+        let binding = term.parser();
+        let parser = binding.lock().unwrap();
+        let widget = PseudoTerminal::new(parser.screen()).block(block);
+        f.render_widget(widget, area);
+    } else {
+        f.render_widget(block, area);
+    }
 }
 
 fn draw_explorer(f: &mut Frame, app: &mut App, area: Rect) {
@@ -231,7 +269,7 @@ fn draw_command_box(f: &mut Frame, app: &App, area: Rect) {
         ])
     } else {
         Line::from(Span::styled(
-            "  :  command   ·   :?  all commands   ·   tab  switch pane   ·   i  insert",
+            "  :  command   ·   :?  commands   ·   tab  switch pane   ·   ctrl-t  terminal   ·   i  insert",
             Style::default().fg(DIM),
         ))
     };

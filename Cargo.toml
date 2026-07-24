@@ -14,6 +14,9 @@ ropey = "1.6"
 anyhow = "1"
 tiny_http = "0.12"
 notify = "6"
+portable-pty = "0.8"
+tui-term = "0.2"
+vt100 = "0.15"
 
 [profile.release]
 opt-level = 3

@@ -2,3 +2,4 @@
 //! terminal front-end, which lives in the `vmn` binary.
 
 pub mod server;
+pub mod terminal;

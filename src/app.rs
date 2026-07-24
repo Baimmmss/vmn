@@ -2,6 +2,7 @@ use anyhow::Result;
 use ropey::Rope;
 use std::path::{Path, PathBuf};
 use vimini::server::{open_in_browser, LiveServer};
+use vimini::terminal::Terminal;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum View {
@@ -59,6 +60,7 @@ fn name_of(p: &Path) -> String {
 pub enum Focus {
     Explorer,
     Editor,
+    Terminal,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -157,6 +159,8 @@ pub struct App {
     pub status: String,
     pub should_quit: bool,
     pub server: Option<LiveServer>,
+    pub terminal: Option<Terminal>,
+    pub term_visible: bool,
 }
 
 impl App {
@@ -177,6 +181,55 @@ impl App {
             status: String::new(),
             should_quit: false,
             server: None,
+            terminal: None,
+            term_visible: false,
+        }
+    }
+
+    /// Show/hide the integrated terminal. Showing it focuses the shell (and
+    /// spawns it on first use); hiding returns focus to the editor. The shell
+    /// process is killed on hide, so re-opening starts a fresh session.
+    pub fn toggle_terminal(&mut self) {
+        if self.term_visible {
+            self.term_visible = false;
+            self.terminal = None;
+            if self.focus == Focus::Terminal {
+                self.focus = Focus::Editor;
+            }
+            return;
+        }
+
+        // Real size is corrected on the first render; these are just seeds.
+        match Terminal::new(&self.cwd, 20, 80) {
+            Ok(t) => {
+                self.terminal = Some(t);
+                self.term_visible = true;
+                self.focus = Focus::Terminal;
+                self.view = View::Workspace;
+                self.status = "terminal — ctrl-t to close".into();
+            }
+            Err(e) => self.status = format!("terminal: {e}"),
+        }
+    }
+
+    /// Called each frame: if the shell exited on its own (`exit`, Ctrl-D),
+    /// tear the panel down.
+    pub fn reap_terminal(&mut self) {
+        if !self.term_visible {
+            return;
+        }
+        let exited = self
+            .terminal
+            .as_mut()
+            .map(|t| t.has_exited())
+            .unwrap_or(true);
+        if exited {
+            self.terminal = None;
+            self.term_visible = false;
+            if self.focus == Focus::Terminal {
+                self.focus = Focus::Editor;
+            }
+            self.status = "terminal closed".into();
         }
     }
 
@@ -442,6 +495,7 @@ impl App {
                 self.refresh_explorer();
                 self.status = "explorer refreshed".into();
             }
+            "term" | "terminal" | "t" => self.toggle_terminal(),
             "?" | "help" | "h" => self.view = View::Help,
             "back" | "b" => {
                 self.view = View::Home;

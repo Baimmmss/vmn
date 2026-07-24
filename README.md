@@ -35,6 +35,7 @@ like Vim, a built-in file explorer, and a batteries-included live server — wit
 - **Modal editing** — Normal / Insert / Command modes, `hjkl` navigation.
 - **Visual file explorer** — browse and open files without leaving the editor; folders expand lazily.
 - **Integrated command bar** — Vim-style `:` commands, including `:cd` to move your working directory.
+- **Integrated terminal** — a real PTY running your own `$SHELL`, right in the workspace. Full ANSI/VT emulation, so `git`, `npm`, `vim`, `htop` all work.
 - **Live server** — `:serve` starts a local dev server, opens your default browser, and auto-reloads the page on every save.
 - **Autosave** — your open file is written to disk every 3 seconds, with an on-screen confirmation.
 - **Any text file type** — `.html`, `.rs`, `.py`, `.js`, `.css`, `.md`, whatever. (It's a text editor, not a hex/image editor.)
@@ -130,6 +131,9 @@ by hand. Listed here for reference (versions from `Cargo.lock`):
 | `anyhow`      | 1.0.103 | Error handling                           |
 | `tiny_http`   | 0.12.0  | Live-server HTTP                         |
 | `notify`      | 6.1.1   | Filesystem watching for live reload      |
+| `portable-pty`| 0.8.1   | Pseudo-terminal for the integrated shell |
+| `vt100`       | 0.15.2  | ANSI/VT terminal emulation               |
+| `tui-term`    | 0.2.0   | Renders the emulated screen in the TUI   |
 
 ### Network
 
@@ -271,7 +275,53 @@ Open the command bar with `:` and type:
 :e about.html            open a file relative to the current directory
 ```
 
-### 8. The live server
+### 8. The integrated terminal
+
+Press **`Ctrl-t`** (or run `:term`) anywhere in the workspace to open a terminal
+panel across the bottom. It starts your own login shell (`$SHELL`, falling back
+to `/bin/zsh`) in the current working directory.
+
+```
+┌ src ────────────┐┌ main.rs ─────────────────────┐
+│   main.rs       ││   1 fn main() {              │
+│   app.rs        ││   2     println!("hi");      │
+└─────────────────┘└──────────────────────────────┘
+┌ terminal ────────────────────────────────────────┐
+│ ~/project $ git status                           │
+│ On branch main                                   │
+│ ~/project $ ▮                                    │
+└──────────────────────────────────────────────────┘
+```
+
+This is a **real PTY**, not a command box — full ANSI/VT emulation, so
+interactive and full-screen programs work normally:
+
+```bash
+git status
+npm run build
+vim notes.txt      # yes, vim inside vmn
+htop
+```
+
+**While the terminal is focused, every keystroke goes to the shell** — including
+`Tab` for completion, `Ctrl-C` to interrupt a running program, `Ctrl-D`, and
+arrow keys for history. The one exception is `Ctrl-t`, which is always
+intercepted so you can get back out.
+
+| Key            | Action                                        |
+| -------------- | --------------------------------------------- |
+| `Ctrl-t`       | open the terminal (focused) / close it        |
+| `Ctrl-C`       | sent to the shell — interrupts the running command, does **not** quit vmn |
+| `exit`, `Ctrl-D` | ends the shell; the panel closes itself     |
+
+The panel resizes the PTY to match its size, so line wrapping and full-screen
+apps lay out correctly. Closing the panel ends the shell session — reopening
+starts a fresh one.
+
+> While the terminal is open, vmn redraws more frequently (every 30 ms instead
+> of 250 ms) so shell output appears promptly.
+
+### 9. The live server
 
 With an HTML/CSS/JS project open:
 
@@ -291,7 +341,7 @@ no extension, no config.
 > The browser is launched via macOS's `open`, so it reuses your running default
 > browser if one is open, or launches it if not.
 
-### 9. Getting help & going home
+### 10. Getting help & going home
 
 ```
 :?                       show the command list (press any key to dismiss)
@@ -315,12 +365,15 @@ no extension, no config.
 | `:serve [port]`    |              | live server + open browser (default port 3000)|
 | `:serve --no-open` |              | live server without opening a browser         |
 | `:serve stop`      |              | stop the live server                          |
+| `:term`            | `:terminal`, `:t` | toggle the integrated terminal (same as `Ctrl-t`) |
 | `:open`            | `:o`         | open the browser at the served URL            |
 | `:?`               | `:help`, `:h`| show the command list                         |
 | `:back`            | `:b`         | return to the home screen                     |
 | `:q`               | `:quit`      | quit                                          |
 
-**Global keys:** `Ctrl-C` quits from anywhere. `Esc` leaves Insert/Command mode.
+**Global keys:** `Ctrl-t` toggles the terminal from anywhere. `Ctrl-C` quits —
+_except_ when the terminal is focused, where it's sent to the shell instead.
+`Esc` leaves Insert/Command mode.
 
 ---
 
@@ -334,10 +387,12 @@ vimini/
 │   ├── main.rs           # entry point, event loop, key handling
 │   ├── lib.rs            # library surface (exposes the server for tests)
 │   ├── app.rs            # editor state: buffer, explorer, cwd, modes, commands
-│   ├── ui.rs             # rendering: home, workspace, help, status bar
-│   └── server.rs         # live server + file watcher + browser launch
+│   ├── ui.rs             # rendering: home, workspace, terminal, help, status bar
+│   ├── server.rs         # live server + file watcher + browser launch
+│   └── terminal.rs       # PTY + shell process + vt100 emulation
 └── tests/
-    └── live_server.rs    # integration tests for the live server
+    ├── live_server.rs    # integration tests for the live server
+    └── terminal.rs       # integration tests for the PTY terminal
 ```
 
 Built with [ratatui](https://ratatui.rs) (TUI), [crossterm](https://github.com/crossterm-rs/crossterm)
@@ -353,15 +408,19 @@ Built with [ratatui](https://ratatui.rs) (TUI), [crossterm](https://github.com/c
 cargo test --release
 ```
 
-Covers the live server end-to-end: HTML serving, reload-script injection, the
-file-change reload signal, path-traversal rejection, and 404s.
+Covers two subsystems end-to-end:
+
+- **Live server** — HTML serving, reload-script injection, the file-change reload
+  signal, path-traversal rejection, and 404s.
+- **Terminal** — spawning a real shell, running a command and seeing its output
+  reach the emulated screen, `PATH` inheritance, and exit detection.
 
 ---
 
 ## Status & roadmap
 
-Working today: modal editing, file explorer, command bar, live server with
-auto-reload and browser launch, autosave.
+Working today: modal editing, file explorer, command bar, integrated PTY
+terminal, live server with auto-reload and browser launch, autosave.
 
 Planned:
 
