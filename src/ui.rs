@@ -1,5 +1,6 @@
 use crate::app::{App, Focus, Mode, View};
 use ratatui::{prelude::*, widgets::*};
+use ropey::Rope;
 use tui_term::widget::PseudoTerminal;
 
 pub const ACCENT: Color = Color::Rgb(120, 170, 255);
@@ -43,6 +44,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (":serve", "live server + open in browser"),
     (":serve stop", "stop the live server"),
     (":term  /  ctrl-t", "toggle the integrated terminal"),
+    (":readme", "open README.md (.md files preview automatically)"),
     (":cd <path>", "change working directory"),
     (":w", "save now"),
     (":?", "show this command list"),
@@ -137,6 +139,11 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Length(32), Constraint::Min(20)])
         .split(top);
 
+    // Remembered so mouse clicks (handled outside the render pass) can be
+    // translated back into an explorer row / buffer position.
+    app.explorer_area = cols[0];
+    app.editor_area = cols[1];
+
     draw_explorer(f, app, cols[0]);
     draw_editor(f, app, cols[1]);
 
@@ -218,46 +225,231 @@ fn draw_editor(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height.saturating_sub(2) as usize;
     app.adjust_scroll(height);
 
-    let gutter_w = format!("{}", app.line_count()).len().max(3);
-    let mut lines: Vec<Line> = Vec::new();
+    let preview = app.preview && app.is_markdown();
 
-    for i in 0..height {
-        let n = app.scroll + i;
-        if n >= app.line_count() {
-            break;
+    let lines: Vec<Line> = if preview {
+        app.editor_gutter_w = 0;
+        render_markdown_window(&app.rope, app.scroll, height)
+    } else {
+        let gutter_w = format!("{}", app.line_count()).len().max(3);
+        app.editor_gutter_w = gutter_w as u16;
+        let mut lines: Vec<Line> = Vec::new();
+        for i in 0..height {
+            let n = app.scroll + i;
+            if n >= app.line_count() {
+                break;
+            }
+            let text = line_text(&app.rope, n);
+            let is_cursor_line = n == app.cursor_line && focused;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:>w$} ", n + 1, w = gutter_w),
+                    Style::default().fg(if is_cursor_line { ACCENT } else { DIM }),
+                ),
+                Span::raw(text),
+            ]));
         }
-        let text: String = app
-            .rope
-            .line(n)
-            .chars()
-            .filter(|c| *c != '\n' && *c != '\r')
-            .collect();
-        let is_cursor_line = n == app.cursor_line && focused;
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:>w$} ", n + 1, w = gutter_w),
-                Style::default().fg(if is_cursor_line { ACCENT } else { DIM }),
-            ),
-            Span::raw(text),
-        ]));
-    }
+        lines
+    };
 
     let title = match &app.path {
         Some(p) => format!(
-            "{}{}",
+            "{}{}{}",
             p.file_name().unwrap_or_default().to_string_lossy(),
-            if app.dirty { " ●" } else { "" }
+            if app.dirty { " ●" } else { "" },
+            if preview { " — preview (i / click to edit)" } else { "" },
         ),
         None => "[no file]".into(),
     };
 
     f.render_widget(Paragraph::new(lines).block(pane(&title, focused)), area);
 
-    if focused && app.mode != Mode::Command && app.path.is_some() {
+    if !preview && focused && app.mode != Mode::Command && app.path.is_some() {
         let row = area.y + 1 + (app.cursor_line.saturating_sub(app.scroll)) as u16;
-        let col = area.x + 1 + gutter_w as u16 + 1 + app.cursor_col as u16;
+        let col = area.x + 1 + app.editor_gutter_w + 1 + app.cursor_col as u16;
         f.set_cursor_position((col, row));
     }
+}
+
+fn line_text(rope: &Rope, n: usize) -> String {
+    rope.line(n)
+        .chars()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect()
+}
+
+/// Render a window of the buffer (one source line per output line, so
+/// scrolling and mouse-click row mapping stay 1:1 with the raw editor) as
+/// styled Markdown: headings, bold/italic/code spans, lists, blockquotes,
+/// rules, and fenced code blocks.
+fn render_markdown_window(rope: &Rope, scroll: usize, height: usize) -> Vec<Line<'static>> {
+    let total = rope.len_lines();
+
+    // Fenced code blocks toggle a mode that spans lines, so replay from the
+    // top to know whether the first visible line starts inside one.
+    let mut in_fence = false;
+    for n in 0..scroll.min(total) {
+        if line_text(rope, n).trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+    }
+
+    let mut out = Vec::new();
+    for i in 0..height {
+        let n = scroll + i;
+        if n >= total {
+            break;
+        }
+        let raw = line_text(rope, n);
+        let trimmed = raw.trim_start();
+
+        // Fence markers are hidden (an empty line keeps rows 1:1 with the
+        // source); code lines get a shaded background instead.
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            out.push(Line::from(""));
+            continue;
+        }
+        if in_fence {
+            out.push(Line::from(Span::styled(
+                format!(" {raw} "),
+                Style::default()
+                    .fg(Color::Rgb(190, 210, 255))
+                    .bg(Color::Rgb(40, 40, 48)),
+            )));
+            continue;
+        }
+        out.push(style_markdown_line(&raw));
+    }
+    out
+}
+
+fn style_markdown_line(raw: &str) -> Line<'static> {
+    // Headings: 1-6 leading '#' followed by a space.
+    let hashes = raw.chars().take_while(|c| *c == '#').count().min(6);
+    if hashes > 0 && raw.as_bytes().get(hashes) == Some(&b' ') {
+        let text = raw[hashes..].trim_start().to_string();
+        let style = match hashes {
+            1 => Style::default().fg(ACCENT).bold().underlined(),
+            2 => Style::default().fg(ACCENT).bold(),
+            _ => Style::default().fg(Color::Rgb(190, 210, 255)).bold(),
+        };
+        return Line::from(Span::styled(text, style));
+    }
+
+    let trimmed = raw.trim_start();
+    let indent = &raw[..raw.len() - trimmed.len()];
+
+    // Horizontal rule: a line of only -, * or _ (at least 3 of them).
+    if trimmed.len() >= 3
+        && (trimmed.chars().all(|c| c == '-')
+            || trimmed.chars().all(|c| c == '*')
+            || trimmed.chars().all(|c| c == '_'))
+    {
+        return Line::from(Span::styled("─".repeat(200), Style::default().fg(DIM)));
+    }
+
+    // Blockquote.
+    if let Some(rest) = trimmed.strip_prefix('>') {
+        let mut spans = vec![Span::styled(format!("{indent}▏ "), Style::default().fg(DIM))];
+        spans.extend(style_inline(rest.trim_start()));
+        return Line::from(spans).style(Style::default().fg(Color::Rgb(160, 165, 180)).italic());
+    }
+
+    // Bulleted list.
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(bullet) {
+            let mut spans = vec![Span::styled(format!("{indent}• "), Style::default().fg(ACCENT))];
+            spans.extend(style_inline(rest));
+            return Line::from(spans);
+        }
+    }
+
+    // Ordered list ("1. text").
+    if let Some(dot) = trimmed.find(". ") {
+        let (digits, rest) = trimmed.split_at(dot);
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            let mut spans = vec![Span::styled(
+                format!("{indent}{digits}. "),
+                Style::default().fg(ACCENT),
+            )];
+            spans.extend(style_inline(&rest[2..]));
+            return Line::from(spans);
+        }
+    }
+
+    Line::from(style_inline(raw))
+}
+
+/// Inline Markdown spans within a single line: `` `code` ``, `**bold**`,
+/// and `*italic*` / `_italic_`. Deliberately simple and non-nested.
+fn style_inline(text: &str) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '`' {
+            if let Some(end) = find_marker(&chars, i + 1, '`') {
+                flush(&mut buf, &mut spans);
+                spans.push(Span::styled(
+                    chars[i + 1..end].iter().collect::<String>(),
+                    Style::default()
+                        .fg(Color::Rgb(230, 180, 120))
+                        .bg(Color::Rgb(40, 40, 48)),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        if chars[i] == '*' && chars.get(i + 1) == Some(&'*') {
+            if let Some(end) = find_double_marker(&chars, i + 2, '*') {
+                flush(&mut buf, &mut spans);
+                spans.push(Span::styled(
+                    chars[i + 2..end].iter().collect::<String>(),
+                    Style::default().bold(),
+                ));
+                i = end + 2;
+                continue;
+            }
+        }
+
+        if chars[i] == '*' || chars[i] == '_' {
+            let marker = chars[i];
+            if let Some(end) = find_marker(&chars, i + 1, marker) {
+                if end > i + 1 {
+                    flush(&mut buf, &mut spans);
+                    spans.push(Span::styled(
+                        chars[i + 1..end].iter().collect::<String>(),
+                        Style::default().italic(),
+                    ));
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        buf.push(chars[i]);
+        i += 1;
+    }
+    flush(&mut buf, &mut spans);
+    spans
+}
+
+fn flush(buf: &mut String, spans: &mut Vec<Span<'static>>) {
+    if !buf.is_empty() {
+        spans.push(Span::raw(std::mem::take(buf)));
+    }
+}
+
+fn find_marker(chars: &[char], from: usize, marker: char) -> Option<usize> {
+    chars[from..].iter().position(|&c| c == marker).map(|p| from + p)
+}
+
+fn find_double_marker(chars: &[char], from: usize, marker: char) -> Option<usize> {
+    (from..chars.len().saturating_sub(1)).find(|&i| chars[i] == marker && chars[i + 1] == marker)
 }
 
 fn draw_command_box(f: &mut Frame, app: &App, area: Rect) {

@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -24,7 +27,7 @@ impl TerminalGuard {
     fn new() -> Result<Self> {
         enable_raw_mode()?;
         let mut out = stdout();
-        execute!(out, EnterAlternateScreen)?;
+        execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
         Ok(Self {
             terminal: Terminal::new(CrosstermBackend::new(out))?,
         })
@@ -34,7 +37,11 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -170,19 +177,7 @@ fn handle_explorer_key(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => {
             app.explorer.selected = app.explorer.selected.saturating_sub(1);
         }
-        KeyCode::Enter | KeyCode::Char('l') => {
-            let i = app.explorer.selected;
-            if let Some(e) = app.explorer.entries.get(i) {
-                if e.is_dir {
-                    app.explorer.toggle(i);
-                } else {
-                    let p = e.path.clone();
-                    if let Err(err) = app.open(&p) {
-                        app.status = format!("error: {err}");
-                    }
-                }
-            }
-        }
+        KeyCode::Enter | KeyCode::Char('l') => app.activate_explorer_selected(),
         _ => {}
     }
 }
@@ -204,13 +199,47 @@ fn handle_editor_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        KeyCode::Char('i') => app.mode = Mode::Insert,
+        KeyCode::Char('i') => app.start_insert(),
         KeyCode::Char('h') | KeyCode::Left => app.move_cursor(0, -1),
         KeyCode::Char('l') | KeyCode::Right => app.move_cursor(0, 1),
         KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1, 0),
         KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1, 0),
         _ => {}
     }
+}
+
+/// Left click: select/open/toggle in the explorer, or place the cursor in
+/// the editor (exiting Markdown preview if it was active). The explorer is
+/// tried first since its pane sits to the left; a click outside both panes'
+/// last-known areas (e.g. the terminal panel) is ignored.
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    if app.view != View::Workspace {
+        return;
+    }
+    let delta = match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if !app.click_explorer(mouse.row, mouse.column) {
+                app.click_editor(mouse.row, mouse.column);
+            }
+            return;
+        }
+        MouseEventKind::ScrollDown => SCROLL_LINES,
+        MouseEventKind::ScrollUp => -SCROLL_LINES,
+        _ => return,
+    };
+    // The wheel scrolls whichever pane is under the pointer, without
+    // changing focus.
+    if contains(app.explorer_area, mouse.column, mouse.row) {
+        app.scroll_explorer(delta);
+    } else if contains(app.editor_area, mouse.column, mouse.row) {
+        app.scroll_editor(delta);
+    }
+}
+
+const SCROLL_LINES: isize = 3;
+
+fn contains(area: Rect, col: u16, row: u16) -> bool {
+    col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
 }
 
 fn run(app: &mut App) -> Result<()> {
@@ -230,11 +259,16 @@ fn run(app: &mut App) -> Result<()> {
             Duration::from_millis(250)
         };
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(app, key);
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        handle_key(app, key);
+                    }
                 }
+                Event::Mouse(mouse) => handle_mouse(app, mouse),
+                _ => {}
             }
+            app.sync_preview();
         }
 
         // Close the panel if the shell exited on its own (exit / Ctrl-D).

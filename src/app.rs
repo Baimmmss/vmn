@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ratatui::layout::Rect;
 use ropey::Rope;
 use std::path::{Path, PathBuf};
 use vimini::server::{open_in_browser, LiveServer};
@@ -161,6 +162,15 @@ pub struct App {
     pub server: Option<LiveServer>,
     pub terminal: Option<Terminal>,
     pub term_visible: bool,
+
+    /// Read-only rendered view of the open file (Markdown only). Clicking or
+    /// pressing `i` in the editor drops back to normal editing.
+    pub preview: bool,
+    /// Screen-space rects of the explorer/editor panes from the last frame,
+    /// used to translate mouse clicks into explorer rows / buffer positions.
+    pub explorer_area: Rect,
+    pub editor_area: Rect,
+    pub editor_gutter_w: u16,
 }
 
 impl App {
@@ -183,7 +193,156 @@ impl App {
             server: None,
             terminal: None,
             term_visible: false,
+            preview: false,
+            explorer_area: Rect::default(),
+            editor_area: Rect::default(),
+            editor_gutter_w: 0,
         }
+    }
+
+    pub fn is_markdown(&self) -> bool {
+        self.path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .map(|e| e.eq_ignore_ascii_case("md"))
+            .unwrap_or(false)
+    }
+
+    /// Markdown files show their rendered preview automatically whenever
+    /// you aren't editing them: on open, and again whenever focus leaves
+    /// the editor. Editing (`i` or a click) switches to the raw text.
+    pub fn sync_preview(&mut self) {
+        if self.focus != Focus::Editor {
+            self.preview = self.is_markdown();
+        }
+    }
+
+    /// Leave the preview and start typing (`i`).
+    pub fn start_insert(&mut self) {
+        self.preview = false;
+        self.mode = Mode::Insert;
+    }
+
+    /// Open `README.md` (any casing) from the current directory straight
+    /// into the rendered preview.
+    pub fn open_readme(&mut self) {
+        for name in ["README.md", "Readme.md", "readme.md"] {
+            let p = self.cwd.join(name);
+            if p.is_file() {
+                match self.open(&p) {
+                    Ok(_) => self.status = "README — click or press i to edit".into(),
+                    Err(e) => self.status = format!("error: {e}"),
+                }
+                return;
+            }
+        }
+        self.status = "no README.md found in the current directory".into();
+    }
+
+    /// Open a file or toggle a directory under the current explorer
+    /// selection — shared by the `enter`/`l` key and mouse clicks.
+    pub fn activate_explorer_selected(&mut self) {
+        let i = self.explorer.selected;
+        if let Some(e) = self.explorer.entries.get(i) {
+            if e.is_dir {
+                self.explorer.toggle(i);
+            } else {
+                let p = e.path.clone();
+                if let Err(err) = self.open(&p) {
+                    self.status = format!("error: {err}");
+                }
+            }
+        }
+    }
+
+    /// Scroll the editor view by `delta` lines (mouse wheel). The cursor is
+    /// dragged along only as far as needed to stay on screen, since the
+    /// renderer otherwise re-scrolls to keep the cursor visible.
+    pub fn scroll_editor(&mut self, delta: isize) {
+        let h = self.editor_area.height.saturating_sub(2) as usize;
+        if h == 0 {
+            return;
+        }
+        let max = self.line_count().saturating_sub(h) as isize;
+        self.scroll = (self.scroll as isize + delta).clamp(0, max) as usize;
+        if self.cursor_line < self.scroll {
+            self.cursor_line = self.scroll;
+        } else if self.cursor_line >= self.scroll + h {
+            self.cursor_line = self.scroll + h - 1;
+        }
+        self.clamp();
+    }
+
+    /// Scroll the explorer list by `delta` rows (mouse wheel), keeping the
+    /// selection inside the visible window.
+    pub fn scroll_explorer(&mut self, delta: isize) {
+        let h = self.explorer_area.height.saturating_sub(2) as usize;
+        let len = self.explorer.entries.len();
+        if h == 0 || len == 0 {
+            return;
+        }
+        let max = len.saturating_sub(h) as isize;
+        let ex = &mut self.explorer;
+        ex.scroll = (ex.scroll as isize + delta).clamp(0, max) as usize;
+        let last_visible = (ex.scroll + h - 1).min(len - 1);
+        ex.selected = ex.selected.clamp(ex.scroll, last_visible);
+    }
+
+    /// Translate a left-click into an explorer selection + activation.
+    /// Returns `false` (and does nothing) if the click fell outside the
+    /// explorer pane's last-known content area.
+    pub fn click_explorer(&mut self, row: u16, col: u16) -> bool {
+        let area = self.explorer_area;
+        if row <= area.y || row + 1 >= area.y + area.height {
+            return false;
+        }
+        if col <= area.x || col + 1 >= area.x + area.width {
+            return false;
+        }
+        let rel_row = (row - area.y - 1) as usize;
+        let index = self.explorer.scroll + rel_row;
+        if index >= self.explorer.entries.len() {
+            return true;
+        }
+        self.explorer.selected = index;
+        self.focus = Focus::Explorer;
+        self.activate_explorer_selected();
+        true
+    }
+
+    /// Translate a left-click into a cursor position in the editor pane.
+    /// Exits preview mode if it was active, so clicking the rendered
+    /// Markdown drops straight back into normal editing. Returns `false`
+    /// if the click fell outside the editor pane's last-known content area.
+    pub fn click_editor(&mut self, row: u16, col: u16) -> bool {
+        let area = self.editor_area;
+        if row <= area.y || row + 1 >= area.y + area.height {
+            return false;
+        }
+        if col <= area.x || col + 1 >= area.x + area.width {
+            return false;
+        }
+        if self.path.is_none() {
+            return true;
+        }
+
+        let was_preview = self.preview;
+        self.preview = false;
+        self.focus = Focus::Editor;
+
+        let rel_row = (row - area.y - 1) as usize;
+        let line = (self.scroll + rel_row).min(self.line_count().saturating_sub(1));
+
+        let rel_col = col.saturating_sub(area.x + 1);
+        let text_col = if was_preview {
+            rel_col
+        } else {
+            rel_col.saturating_sub(self.editor_gutter_w + 1)
+        };
+
+        self.cursor_line = line;
+        self.cursor_col = (text_col as usize).min(self.line_len(line));
+        true
     }
 
     /// Show/hide the integrated terminal. Showing it focuses the shell (and
@@ -385,6 +544,7 @@ impl App {
         self.cursor_col = 0;
         self.scroll = 0;
         self.dirty = false;
+        self.preview = self.is_markdown();
         self.view = View::Workspace;
         self.focus = Focus::Editor;
         Ok(())
@@ -496,6 +656,7 @@ impl App {
                 self.status = "explorer refreshed".into();
             }
             "term" | "terminal" | "t" => self.toggle_terminal(),
+            "readme" => self.open_readme(),
             "?" | "help" | "h" => self.view = View::Help,
             "back" | "b" => {
                 self.view = View::Home;

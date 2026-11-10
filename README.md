@@ -39,6 +39,8 @@ like Vim, a built-in file explorer, and a batteries-included live server — wit
 - **Live server** — `:serve` starts a local dev server, opens your default browser, and auto-reloads the page on every save.
 - **Autosave** — your open file is written to disk every 3 seconds, with an on-screen confirmation.
 - **Any text file type** — `.html`, `.rs`, `.py`, `.js`, `.css`, `.md`, whatever. (It's a text editor, not a hex/image editor.)
+- **Automatic Markdown preview** — any `.md` file (open one, or jump to `README.md` with `:readme`) shows rendered: styled headings, bold/italic, code blocks, and lists — no toggle needed. Click anywhere in it (or press `i`) to edit the raw text, cursor placed where you clicked; the preview comes back when you leave the editor.
+- **Mouse support** — click a file in the explorer to open or expand it, click anywhere in the editor to place the cursor, and use the scroll wheel / trackpad to scroll whichever pane is under the pointer (including the README preview).
 
 ---
 
@@ -55,9 +57,10 @@ two entry points — `enter` to open the workspace, `:?` for the command list.
 
 Open the workspace with `enter`. The left pane is the file explorer (folders shown
 with `▸` collapsed / `▾` expanded); the right pane is the editor. The focused pane
-has a highlighted border. Use `Tab` to switch panes and `j`/`k` to move the selection.
+has a highlighted border. Use `Tab` to switch panes and `j`/`k` (or a click) to move
+the selection.
 
-![vmn file explorer](workspace.png)
+![vmn file explorer](workplace.png)
 
 ### Workspace — editing a file
 
@@ -69,104 +72,43 @@ directory, and the cursor position.
 
 > The status bar always shows the current mode (`NORMAL` / `INSERT` / `COMMAND`),
 > and the bottom hint row lists the quick keys: `:` command · `:?` all commands ·
-> `tab` switch pane · `i` insert.
+> `tab` switch pane · `ctrl-t` terminal · `i` insert.
 
----
+### Markdown preview
 
-## Requirements
-
-### System
-
-| Requirement    | Details                                                                 |
-| -------------- | ----------------------------------------------------------------------- |
-| **OS**         | macOS (developed and tested on macOS 15 / Darwin 25). UNIX-like, 64-bit. |
-| **Terminal**   | Any modern terminal with raw-mode + true-color (24-bit) support — Terminal.app, iTerm2, WezTerm, Alacritty, Kitty, etc. |
-| **`open`**     | Built into macOS. Used by `:serve` to launch your default browser.      |
-| **`date`**     | Built into macOS. Used once per session to read your local time zone for the autosave timestamp. |
-
-No other system packages are needed — the binary is self-contained.
-
-### Build toolchain
-
-| Tool      | Version           | Notes                                        |
-| --------- | ----------------- | -------------------------------------------- |
-| **Rust**  | 1.96.0 (or newer) | Edition 2021. Install via [rustup](https://rustup.rs). |
-| **Cargo** | ships with Rust   | Used to build and install.                    |
-
-#### How to Install the Toolchain
-
-If you do not have Rust and Cargo installed, you can set them up using the following commands:
-
-1. **Install rustup** (the official Rust toolchain installer):
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-   Follow the on-screen prompts. Once completed, restart your terminal or run:
-   ```bash
-   source "$HOME/.cargo/env"
-   ```
-
-2. **Alternative installation (Homebrew for macOS)**:
-   ```bash
-   brew install rustup
-   rustup-init
-   ```
-
-3. **Verify the installation**:
-   ```bash
-   rustc --version    # should be >= 1.96.0
-   cargo --version
-   ```
-
-### Rust dependencies
-
-These are fetched automatically by Cargo on first build — you don't install them
-by hand. Listed here for reference (versions from `Cargo.lock`):
-
-| Crate         | Version | Purpose                                  |
-| ------------- | ------- | ---------------------------------------- |
-| `crossterm`   | 0.28.1  | Terminal raw mode, input events, screen  |
-| `ratatui`     | 0.29.0  | TUI layout and rendering                 |
-| `ropey`       | 1.6.1   | Rope text buffer (fast edits, big files) |
-| `anyhow`      | 1.0.103 | Error handling                           |
-| `tiny_http`   | 0.12.0  | Live-server HTTP                         |
-| `notify`      | 6.1.1   | Filesystem watching for live reload      |
-| `portable-pty`| 0.8.1   | Pseudo-terminal for the integrated shell |
-| `vt100`       | 0.15.2  | ANSI/VT terminal emulation               |
-| `tui-term`    | 0.2.0   | Renders the emulated screen in the TUI   |
-
-### Network
-
-- **None to build or edit.** Everything runs locally.
-- Cargo needs internet access **once** to download crates on the first build.
-- `:serve` binds a **local** port (default `3000`) on `127.0.0.1` — nothing is exposed to your network.
+Open any `.md` file and it shows rendered — headings, **bold**, `code`, bullets —
+with the Markdown symbols hidden. Click anywhere (or press `i`) to edit the raw
+text; the preview returns when you leave the editor.
 
 ---
 
 ## Install
 
-Requires the [Rust toolchain](https://rustup.rs) (`cargo`) — see [Requirements](#requirements) above.
+**What you need:** a Mac (Apple Silicon or Intel) and any terminal app —
+Terminal.app, iTerm2, WezTerm, Alacritty, Kitty… Nothing else: no Rust, no
+Homebrew, no extra packages.
 
-```bash
-cd vimini
-cargo install --path .
-```
+1. Download **`vmn-macos.zip`** and unzip it.
+2. Run the installer **once**:
 
-This installs the `vmn` binary to `~/.cargo/bin`. Make sure that's on your `PATH`
-(add this to `~/.zshrc` if needed):
+   ```bash
+   cd vmn-macos
+   ./install.sh
+   ```
 
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
+   It may ask for your password (to copy `vmn` into `/usr/local/bin`).
 
-Now `vmn` works from anywhere.
+3. That's it. From now on, in any terminal, just type:
 
-### Run from source without installing
+   ```bash
+   vmn
+   ```
 
-```bash
-cargo run --release           # opens the current directory
-cargo run --release -- file   # opens a file
-```
+> **macOS says vmn "can't be opened"?** `install.sh` normally prevents this. If
+> it still happens, run `xattr -d com.apple.quarantine /usr/local/bin/vmn` once.
+
+**Uninstall:** `sudo rm /usr/local/bin/vmn` (or `rm ~/.local/bin/vmn` if the
+installer put it there).
 
 ---
 
@@ -175,6 +117,7 @@ cargo run --release -- file   # opens a file
 ```bash
 vmn                # home screen, rooted at the current directory
 vmn src/main.rs    # jump straight into a file
+vmn README.md      # Markdown files open as a rendered preview
 vmn ~/projects     # open with the explorer rooted there
 ```
 
@@ -218,6 +161,8 @@ Press `enter` to open the workspace. It has two panes:
 | `k` / `↑`      | move up                         |
 | `enter` / `l`  | open a file, or expand a folder |
 | `enter` / `l`  | collapse an expanded folder     |
+| click          | select + open a file / toggle a folder |
+| scroll wheel   | scroll the file list            |
 | `Tab`          | switch focus to the editor      |
 
 Folders read their contents only when you first expand them, so opening a large
@@ -236,13 +181,21 @@ the status bar at the bottom (`NORMAL`, `INSERT`, `COMMAND`).
 | `j` / `↓`   | down          |
 | `k` / `↑`   | up            |
 | `l` / `→`   | right         |
-| `i`         | enter Insert  |
+| click       | put the cursor there |
+| scroll wheel | scroll the file |
+| `i`         | enter Insert (leaves a Markdown preview) |
 | `:`         | enter Command |
 
 **Insert mode** — type text. Press **`Esc`** to return to Normal mode.
 `Enter` and `Backspace` work as expected.
 
 A `●` next to the filename means there are unsaved changes.
+
+**Mouse:** click any file or folder in the explorer to open/expand it, click
+anywhere in the editor to place the cursor there, and scroll with the mouse
+wheel or trackpad over either pane (3 lines per notch) — the wheel scrolls
+whichever pane is under the pointer without changing focus. Handy alongside
+hjkl/arrows, not a replacement for them.
 
 ### 5. Autosave
 
@@ -321,7 +274,20 @@ starts a fresh one.
 > While the terminal is open, vmn redraws more frequently (every 30 ms instead
 > of 250 ms) so shell output appears promptly.
 
-### 9. The live server
+### 9. The README / Markdown preview
+
+```
+:readme                  open README.md from the current directory
+```
+
+There's nothing to toggle: every `.md` file opens as a rendered preview —
+headings, **bold**/*italic*, `inline code`, shaded code blocks, lists,
+blockquotes, and `---` rules, with the Markdown symbols hidden. Press **`i`**
+or **click anywhere in it** to edit the raw text; the cursor lands where you
+clicked. When you move focus away from the editor (`Tab`, the explorer, the
+terminal), the preview returns automatically.
+
+### 10. The live server
 
 With an HTML/CSS/JS project open:
 
@@ -341,7 +307,7 @@ no extension, no config.
 > The browser is launched via macOS's `open`, so it reuses your running default
 > browser if one is open, or launches it if not.
 
-### 10. Getting help & going home
+### 11. Getting help & going home
 
 ```
 :?                       show the command list (press any key to dismiss)
@@ -366,6 +332,7 @@ no extension, no config.
 | `:serve --no-open` |              | live server without opening a browser         |
 | `:serve stop`      |              | stop the live server                          |
 | `:term`            | `:terminal`, `:t` | toggle the integrated terminal (same as `Ctrl-t`) |
+| `:readme`          |              | open `README.md` (Markdown files preview automatically) |
 | `:open`            | `:o`         | open the browser at the served URL            |
 | `:?`               | `:help`, `:h`| show the command list                         |
 | `:back`            | `:b`         | return to the home screen                     |
@@ -377,50 +344,13 @@ _except_ when the terminal is focused, where it's sent to the shell instead.
 
 ---
 
-## Project layout
-
-```
-vimini/
-├── Cargo.toml            # crate + [[bin]] name = "vmn"
-├── README.md
-├── src/
-│   ├── main.rs           # entry point, event loop, key handling
-│   ├── lib.rs            # library surface (exposes the server for tests)
-│   ├── app.rs            # editor state: buffer, explorer, cwd, modes, commands
-│   ├── ui.rs             # rendering: home, workspace, terminal, help, status bar
-│   ├── server.rs         # live server + file watcher + browser launch
-│   └── terminal.rs       # PTY + shell process + vt100 emulation
-└── tests/
-    ├── live_server.rs    # integration tests for the live server
-    └── terminal.rs       # integration tests for the PTY terminal
-```
-
-Built with [ratatui](https://ratatui.rs) (TUI), [crossterm](https://github.com/crossterm-rs/crossterm)
-(terminal), [ropey](https://github.com/cessen/ropey) (text buffer),
-[tiny_http](https://github.com/tiny-http/tiny-http) and
-[notify](https://github.com/notify-rs/notify) (live server).
-
----
-
-## Running the tests
-
-```bash
-cargo test --release
-```
-
-Covers two subsystems end-to-end:
-
-- **Live server** — HTML serving, reload-script injection, the file-change reload
-  signal, path-traversal rejection, and 404s.
-- **Terminal** — spawning a real shell, running a command and seeing its output
-  reach the emulated screen, `PATH` inheritance, and exit detection.
-
----
-
 ## Status & roadmap
 
 Working today: modal editing, file explorer, command bar, integrated PTY
-terminal, live server with auto-reload and browser launch, autosave.
+terminal, live server with auto-reload and browser launch, autosave,
+automatic Markdown/README preview, mouse support (click to select/open in the
+explorer, click to position the cursor in the editor, wheel scrolling), and a
+prebuilt universal binary with a one-time installer.
 
 Planned:
 
@@ -433,3 +363,17 @@ Planned:
 - **macOS-focused.** The `:serve` browser launch uses macOS's `open`.
 - **Text only.** The buffer is UTF-8 text; binary files (images, etc.) won't render meaningfully.
 - Autosave writes in place. It does not keep a separate backup file.
+- **Mouse capture vs. text selection.** Because vmn handles clicks and scrolling
+  itself, your terminal's own click-and-drag text selection is captured too. To
+  select/copy text the usual way, hold **⌥ Option** while dragging in iTerm2, or
+  toggle **View → Allow Mouse Reporting** (⌘R) in Terminal.app.
+- **The wheel doesn't scroll the terminal panel.** Shell scrollback isn't kept;
+  the wheel only scrolls the explorer and editor.
+- **Markdown preview is intentionally simple** — one rendered line per source
+  line, no nested emphasis, tables, or images (`![alt](file)` shows as text).
+- **`:serve` stays on your machine.** It listens on `127.0.0.1` only (default
+  port `3000`) — nothing is exposed to your network.
+
+---
+
+Want to build or change vmn yourself? See [DEVELOPMENT.md](DEVELOPMENT.md).
